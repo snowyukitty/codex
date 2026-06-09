@@ -38,7 +38,8 @@ pub(super) enum RealtimeOutboundMessage {
     InputAudioBufferAppend { audio: String },
     #[serde(rename = "conversation.handoff.append")]
     ConversationHandoffAppend {
-        handoff_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        handoff_id: Option<String>,
         output_text: String,
     },
     #[serde(rename = "response.create")]
