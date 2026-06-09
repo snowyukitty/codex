@@ -1783,14 +1783,12 @@ impl Session {
     }
 
     async fn maybe_send_realtime_terminal_output(&self, msg: &EventMsg) {
-        let EventMsg::TurnComplete(event) = msg else {
-            return;
+        let output_text = match msg {
+            EventMsg::TurnComplete(event) => event.last_agent_message.clone(),
+            EventMsg::TurnAborted(_) => None,
+            _ => return,
         };
-        if let Err(err) = self
-            .conversation
-            .finish_turn(event.last_agent_message.clone())
-            .await
-        {
+        if let Err(err) = self.conversation.finish_turn(output_text).await {
             debug!("failed to send terminal output to realtime conversation: {err}");
         }
     }
