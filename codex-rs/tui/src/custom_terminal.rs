@@ -33,7 +33,9 @@ use crossterm::style::SetAttribute;
 use crossterm::style::SetBackgroundColor;
 use crossterm::style::SetColors;
 use crossterm::style::SetForegroundColor;
+use crossterm::terminal::BeginSynchronizedUpdate;
 use crossterm::terminal::Clear;
+use crossterm::terminal::EndSynchronizedUpdate;
 use derive_more::IsVariant;
 use ratatui::backend::Backend;
 use ratatui::backend::ClearType;
@@ -283,6 +285,15 @@ where
     /// Gets the backend as a mutable reference
     pub fn backend_mut(&mut self) -> &mut B {
         &mut self.backend
+    }
+
+    /// Runs terminal operations inside a synchronized frame on this terminal's backend writer.
+    pub fn sync_update<T>(&mut self, operations: impl FnOnce(&mut Self) -> T) -> io::Result<T> {
+        queue!(self.backend, BeginSynchronizedUpdate)?;
+        let result = operations(self);
+        queue!(self.backend, EndSynchronizedUpdate)?;
+        std::io::Write::flush(&mut self.backend)?;
+        Ok(result)
     }
 
     /// Obtains a difference between the previous and the current buffer and passes it to the
@@ -772,8 +783,16 @@ mod tests {
     use ratatui::layout::Rect;
     use ratatui::style::Style;
 
+    #[derive(Debug, PartialEq, Eq)]
+    enum CaptureEvent {
+        Write(String),
+        SetCursorPosition(Position),
+        Flush,
+    }
+
     struct CaptureBackend {
         output: Vec<u8>,
+        events: Vec<CaptureEvent>,
         size: Size,
         cursor: Position,
     }
@@ -782,6 +801,7 @@ mod tests {
         fn new(width: u16, height: u16) -> Self {
             Self {
                 output: Vec::new(),
+                events: Vec::new(),
                 size: Size { width, height },
                 cursor: Position { x: 0, y: 0 },
             }
@@ -790,15 +810,23 @@ mod tests {
         fn output(&self) -> String {
             String::from_utf8_lossy(&self.output).into_owned()
         }
+
+        fn events(&self) -> &[CaptureEvent] {
+            &self.events
+        }
     }
 
     impl Write for CaptureBackend {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
             self.output.extend_from_slice(buf);
+            self.events.push(CaptureEvent::Write(
+                String::from_utf8_lossy(buf).into_owned(),
+            ));
             Ok(buf.len())
         }
 
         fn flush(&mut self) -> io::Result<()> {
+            self.events.push(CaptureEvent::Flush);
             Ok(())
         }
     }
@@ -824,7 +852,9 @@ mod tests {
         }
 
         fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
-            self.cursor = position.into();
+            let position = position.into();
+            self.cursor = position;
+            self.events.push(CaptureEvent::SetCursorPosition(position));
             Ok(())
         }
 
@@ -868,6 +898,7 @@ mod tests {
         }
 
         fn flush(&mut self) -> io::Result<()> {
+            self.events.push(CaptureEvent::Flush);
             Ok(())
         }
     }
@@ -915,6 +946,60 @@ mod tests {
                 .iter()
                 .any(|command| matches!(command, DrawCommand::ClearToEnd { x: 2, y: 0, .. })),
             "expected clear-to-end to start after the remaining wide char; commands: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn terminal_sync_update_flushes_draw_before_ending_frame() {
+        let mut terminal =
+            Terminal::with_options(CaptureBackend::new(/*width*/ 2, /*height*/ 1))
+                .expect("terminal");
+        terminal.set_viewport_area(Rect::new(0, 0, 2, 1));
+
+        terminal
+            .sync_update(|terminal| {
+                terminal.draw(|frame| {
+                    frame.buffer.set_string(0, 0, "x", Style::default());
+                    frame.set_cursor_position((1, 0));
+                })
+            })
+            .expect("sync update")
+            .expect("draw");
+
+        let output = terminal.backend().output();
+        let begin = output.find("\x1b[?2026h").expect("begin sync update");
+        let write = output.find('x').expect("cell write");
+        let end = output.find("\x1b[?2026l").expect("end sync update");
+        assert!(
+            begin < write && write < end,
+            "expected draw output inside synchronized frame, got {output:?}",
+        );
+
+        let events = terminal.backend().events();
+        let cursor_position = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    CaptureEvent::SetCursorPosition(Position { x: 1, y: 0 })
+                )
+            })
+            .expect("cursor position");
+        let draw_flush = events
+            .iter()
+            .enumerate()
+            .skip(cursor_position + 1)
+            .find_map(|(index, event)| matches!(event, CaptureEvent::Flush).then_some(index))
+            .expect("draw flush");
+        let end_write = events
+            .iter()
+            .position(
+                |event| matches!(event, CaptureEvent::Write(text) if text.contains("\x1b[?2026l")),
+            )
+            .expect("sync end");
+        assert!(
+            cursor_position < draw_flush && draw_flush < end_write,
+            "expected cursor position to flush before sync end, got {events:?}",
         );
     }
 
