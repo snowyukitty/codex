@@ -29,7 +29,7 @@ pub(super) fn conversation_item_create_message(text: String) -> RealtimeOutbound
 }
 
 pub(super) fn conversation_handoff_append_message(
-    handoff_id: String,
+    handoff_id: Option<String>,
     output_text: String,
 ) -> RealtimeOutboundMessage {
     RealtimeOutboundMessage::ConversationHandoffAppend {
