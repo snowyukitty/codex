@@ -214,7 +214,22 @@ function Test-ArchiveDigest {
         [string]$ExpectedDigest
     )
 
-    $actualDigest = (Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    # Windows PowerShell can inherit a PowerShell 7 module path that hides Get-FileHash.
+    $stream = [System.IO.File]::OpenRead($ArchivePath)
+    try {
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $hashBytes = $sha256.ComputeHash($stream)
+        }
+        finally {
+            $sha256.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+
+    $actualDigest = [System.BitConverter]::ToString($hashBytes).Replace("-", "").ToLowerInvariant()
     if ($actualDigest -ne $ExpectedDigest) {
         throw "Downloaded Codex archive checksum did not match expected digest. Expected $ExpectedDigest but got $actualDigest."
     }
