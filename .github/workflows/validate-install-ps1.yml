@@ -28,7 +28,7 @@ jobs:
           # Recreate the exact child environment the codex updater produces in the field:
           # powershell.exe 5.1 with pwsh's module directory ahead of the Windows PowerShell ones.
           $ps7Modules = Join-Path $PSHOME 'Modules'
-          $winpsModules = Join-Path $env:windir 'System32\WindowsPowerShell1.0\Modules'
+          $winpsModules = Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\Modules'
           "pwsh-shipped Microsoft.PowerShell.Utility present: $(Test-Path (Join-Path $ps7Modules 'Microsoft.PowerShell.Utility'))"
           $cmd = '$c = Get-Command Get-FileHash -ErrorAction SilentlyContinue; "found=$([bool]$c) source=$($c.Source) version=$($c.Version)"'
           "--- child with runner-inherited environment ---"
