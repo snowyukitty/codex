@@ -15,7 +15,6 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crossterm::Command;
-use crossterm::SynchronizedUpdate;
 use crossterm::cursor::SetCursorStyle;
 use crossterm::event::DisableBracketedPaste;
 use crossterm::event::DisableFocusChange;
@@ -970,13 +969,23 @@ impl Tui {
 
         ensure_virtual_terminal_processing()?;
 
-        stdout().sync_update(|_| {
+        let pending_history_lines = &mut self.pending_history_lines;
+        let scrollback = self.scrollback;
+
+        #[cfg(unix)]
+        let suspend_context = self.suspend_context.clone();
+        #[cfg(unix)]
+        let alt_screen_active = Arc::clone(&self.alt_screen_active);
+        #[cfg(unix)]
+        let alt_saved_viewport = self.alt_saved_viewport;
+
+        let terminal = &mut self.terminal;
+        terminal.sync_update(|terminal| {
             #[cfg(unix)]
             if let Some(prepared) = prepared_resume.take() {
-                prepared.apply(&mut self.terminal, screen_size)?;
+                prepared.apply(terminal, screen_size)?;
             }
 
-            let terminal = &mut self.terminal;
             if let Some(new_area) = pending_viewport_area.take() {
                 terminal.set_viewport_area(new_area);
                 terminal.clear()?;
@@ -987,7 +996,7 @@ impl Tui {
             area.width = screen_size.width;
             // If the viewport has expanded, scroll everything else up to make room.
             if area.bottom() > screen_size.height {
-                self.scrollback.grow_viewport(
+                scrollback.grow_viewport(
                     terminal,
                     area.top(),
                     screen_size,
@@ -1004,8 +1013,8 @@ impl Tui {
 
             Self::flush_pending_history_lines(
                 terminal,
-                &mut self.pending_history_lines,
-                self.scrollback,
+                pending_history_lines,
+                scrollback,
                 screen_size,
             )?;
 
@@ -1013,14 +1022,14 @@ impl Tui {
             #[cfg(unix)]
             {
                 let area = terminal.viewport_area;
-                let inline_area_bottom = if self.alt_screen_active.load(Ordering::Relaxed) {
-                    self.alt_saved_viewport
+                let inline_area_bottom = if alt_screen_active.load(Ordering::Relaxed) {
+                    alt_saved_viewport
                         .map(|r| r.bottom().saturating_sub(1))
                         .unwrap_or_else(|| area.bottom().saturating_sub(1))
                 } else {
                     area.bottom().saturating_sub(1)
                 };
-                self.suspend_context.set_cursor_y(inline_area_bottom);
+                suspend_context.set_cursor_y(inline_area_bottom);
             }
 
             terminal.draw_with_size(screen_size, |frame| {
@@ -1039,7 +1048,7 @@ impl Tui {
 
         let terminal = &mut self.terminal;
         let state = &mut self.ambient_pet_image_state;
-        stdout().sync_update(|_| {
+        terminal.sync_update(|terminal| {
             match crate::pets::render_ambient_pet_image(terminal.backend_mut(), state, request) {
                 Ok(()) => Ok(Ok(())),
                 Err(crate::pets::PetImageRenderError::Terminal(err)) => Err(err),
@@ -1058,7 +1067,7 @@ impl Tui {
 
         let terminal = &mut self.terminal;
         let state = &mut self.pet_picker_preview_image_state;
-        stdout().sync_update(|_| {
+        terminal.sync_update(|terminal| {
             match crate::pets::render_pet_picker_preview_image(
                 terminal.backend_mut(),
                 state,
@@ -1105,27 +1114,37 @@ impl Tui {
 
         ensure_virtual_terminal_processing()?;
 
-        stdout().sync_update(|_| {
+        let pending_history_lines = &mut self.pending_history_lines;
+        let scrollback = self.scrollback;
+
+        #[cfg(unix)]
+        let suspend_context = self.suspend_context.clone();
+        #[cfg(unix)]
+        let alt_screen_active = Arc::clone(&self.alt_screen_active);
+        #[cfg(unix)]
+        let alt_saved_viewport = self.alt_saved_viewport;
+
+        let terminal = &mut self.terminal;
+        terminal.sync_update(|terminal| {
             #[cfg(unix)]
             if let Some(prepared) = prepared_resume.take() {
-                prepared.apply(&mut self.terminal, screen_size)?;
+                prepared.apply(terminal, screen_size)?;
             }
 
-            let terminal = &mut self.terminal;
             let needs_full_repaint = Self::update_inline_viewport_for_resize_reflow(
                 terminal,
                 height,
                 screen_size,
-                self.scrollback,
+                scrollback,
             )?;
             // A zero- or one-row history region cannot isolate raw history writes from the
             // viewport, so replayed rows can leave stale cells inside the composer.
             let history_can_overlap_viewport =
-                !self.pending_history_lines.is_empty() && terminal.viewport_area.top() <= 1;
+                !pending_history_lines.is_empty() && terminal.viewport_area.top() <= 1;
             Self::flush_pending_history_lines(
                 terminal,
-                &mut self.pending_history_lines,
-                self.scrollback,
+                pending_history_lines,
+                scrollback,
                 screen_size,
             )?;
 
@@ -1137,14 +1156,14 @@ impl Tui {
             #[cfg(unix)]
             {
                 let area = terminal.viewport_area;
-                let inline_area_bottom = if self.alt_screen_active.load(Ordering::Relaxed) {
-                    self.alt_saved_viewport
+                let inline_area_bottom = if alt_screen_active.load(Ordering::Relaxed) {
+                    alt_saved_viewport
                         .map(|r| r.bottom().saturating_sub(1))
                         .unwrap_or_else(|| area.bottom().saturating_sub(1))
                 } else {
                     area.bottom().saturating_sub(1)
                 };
-                self.suspend_context.set_cursor_y(inline_area_bottom);
+                suspend_context.set_cursor_y(inline_area_bottom);
             }
 
             terminal.draw_with_size(screen_size, |frame| {
