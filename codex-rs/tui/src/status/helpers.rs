@@ -11,7 +11,7 @@ use codex_utils_path_uri::PathUri;
 use std::path::Path;
 
 fn normalize_agents_display_path(path: &Path) -> String {
-    dunce::simplified(path).display().to_string()
+    format_directory_display(dunce::simplified(path), /*max_width*/ None)
 }
 
 pub(crate) fn compose_model_display(
@@ -281,6 +281,27 @@ mod tests {
         assert_eq!(
             compose_agents_summary(&config, &[PathUri::from_abs_path(&override_path.abs())]),
             format_directory_display(&override_path, /*max_width*/ None)
+        );
+    }
+
+    #[tokio::test]
+    async fn compose_agents_summary_collapses_home_relative_agents_path() {
+        let codex_home = TempDir::new().expect("temp codex home");
+        let cwd = TempDir::new().expect("temp cwd");
+        let config = test_config(&codex_home, &cwd).await;
+        let Some(home) = dirs::home_dir() else {
+            // Without a home directory there is no collapse to assert:
+            // `relativize_to_home` returns `None` for every path.
+            return;
+        };
+        let agents_path = home.join(".codex").join("AGENTS.md");
+
+        assert_eq!(
+            compose_agents_summary(&config, &[PathUri::from_abs_path(&agents_path.abs())]),
+            format!(
+                "~{sep}.codex{sep}AGENTS.md",
+                sep = std::path::MAIN_SEPARATOR
+            )
         );
     }
 
