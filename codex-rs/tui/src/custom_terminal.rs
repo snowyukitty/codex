@@ -1383,11 +1383,11 @@ mod tests {
             .expect("draw");
 
         let output = terminal.backend().output();
-        let begin = output.find("[?2026h").expect("begin sync update");
-        let hide = output.find("[?25l").expect("caret hidden");
+        let begin = output.find("\x1b[?2026h").expect("begin sync update");
+        let hide = output.find("\x1b[?25l").expect("caret hidden");
         let write = output.find('x').expect("cell write");
-        let show = output.find("[?25h").expect("caret shown");
-        let end = output.find("[?2026l").expect("end sync update");
+        let show = output.find("\x1b[?25h").expect("caret shown");
+        let end = output.find("\x1b[?2026l").expect("end sync update");
         assert!(
             begin < hide && hide < write && write < show && show < end,
             "expected the caret to stay hidden while the frame paints, got {output:?}",
@@ -1405,7 +1405,9 @@ mod tests {
             .expect("final caret position");
         let shown = events
             .iter()
-            .position(|event| matches!(event, CaptureEvent::Write(text) if text.contains("[?25h")))
+            .position(
+                |event| matches!(event, CaptureEvent::Write(text) if text.contains("\x1b[?25h")),
+            )
             .expect("caret shown");
         assert!(
             placed < shown,
@@ -1430,9 +1432,9 @@ mod tests {
             "caret visibility should be restored"
         );
         let output = terminal.backend().output();
-        let hide = output.find("[?25l").expect("caret hidden");
-        let show = output.find("[?25h").expect("caret shown");
-        let end = output.find("[?2026l").expect("end sync update");
+        let hide = output.find("\x1b[?25l").expect("caret hidden");
+        let show = output.find("\x1b[?25h").expect("caret shown");
+        let end = output.find("\x1b[?2026l").expect("end sync update");
         assert!(
             hide < show && show < end,
             "expected the caret to be restored inside the frame, got {output:?}",
@@ -1454,8 +1456,8 @@ mod tests {
         // A terminal that honours DEC private mode 2026 holds the screen until the end marker
         // arrives, so a frame that failed partway through still has to close.
         let output = terminal.backend().output();
-        let begin = output.find("[?2026h").expect("begin sync update");
-        let end = output.find("[?2026l").expect("end sync update");
+        let begin = output.find("\x1b[?2026h").expect("begin sync update");
+        let end = output.find("\x1b[?2026l").expect("end sync update");
         assert!(
             begin < end,
             "expected the frame to close after a failed caret write, got {output:?}",
