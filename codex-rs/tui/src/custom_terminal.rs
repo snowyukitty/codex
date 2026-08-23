@@ -288,6 +288,10 @@ where
     }
 
     /// Runs terminal operations inside a synchronized frame on this terminal's backend writer.
+    ///
+    /// The frame is closed on every path out of `operations`, including a failing one. A terminal
+    /// that honours DEC private mode 2026 holds the screen until the end marker arrives, so an
+    /// unmatched begin marker freezes it rather than tearing it.
     pub fn sync_update<T>(&mut self, operations: impl FnOnce(&mut Self) -> T) -> io::Result<T> {
         queue!(self.backend, BeginSynchronizedUpdate)?;
 
@@ -297,21 +301,34 @@ where
         // appears to jump between the composer, the status line and the footer. Keep it hidden for
         // the duration of the frame; the frame itself decides where it ends up.
         let caret_was_visible = !self.hidden_cursor;
-        if caret_was_visible {
-            self.hide_cursor()?;
-        }
+        let mut first_error = if caret_was_visible {
+            self.hide_cursor().err()
+        } else {
+            None
+        };
         let caret_ops_before_frame = self.cursor_visibility_ops;
 
         let result = operations(self);
 
         // Restore the caller's caret only when the frame did not place one of its own.
-        if caret_was_visible && self.cursor_visibility_ops == caret_ops_before_frame {
-            self.show_cursor()?;
+        if caret_was_visible
+            && self.cursor_visibility_ops == caret_ops_before_frame
+            && let Err(err) = self.show_cursor()
+        {
+            first_error.get_or_insert(err);
         }
 
-        queue!(self.backend, EndSynchronizedUpdate)?;
-        std::io::Write::flush(&mut self.backend)?;
-        Ok(result)
+        if let Err(err) = queue!(self.backend, EndSynchronizedUpdate) {
+            first_error.get_or_insert(err);
+        }
+        if let Err(err) = std::io::Write::flush(&mut self.backend) {
+            first_error.get_or_insert(err);
+        }
+
+        match first_error {
+            Some(err) => Err(err),
+            None => Ok(result),
+        }
     }
 
     /// Obtains a difference between the previous and the current buffer and passes it to the
@@ -900,6 +917,9 @@ mod tests {
         size: Size,
         cursor: Position,
         size_call_count: std::cell::Cell<usize>,
+        /// When set, `hide_cursor` fails instead of writing. Models a caret write failing partway
+        /// through a synchronized frame.
+        fail_hide_cursor: bool,
     }
 
     impl CaptureBackend {
@@ -910,6 +930,7 @@ mod tests {
                 size: Size { width, height },
                 cursor: Position { x: 0, y: 0 },
                 size_call_count: std::cell::Cell::new(/*value*/ 0),
+                fail_hide_cursor: false,
             }
         }
 
@@ -948,6 +969,9 @@ mod tests {
         }
 
         fn hide_cursor(&mut self) -> io::Result<()> {
+            if self.fail_hide_cursor {
+                return Err(io::Error::other("hide cursor failed"));
+            }
             queue!(self, crossterm::cursor::Hide)
         }
 
@@ -1412,6 +1436,29 @@ mod tests {
         assert!(
             hide < show && show < end,
             "expected the caret to be restored inside the frame, got {output:?}",
+        );
+    }
+
+    #[test]
+    fn terminal_sync_update_ends_the_frame_when_a_caret_write_fails() {
+        let mut backend = CaptureBackend::new(/*width*/ 2, /*height*/ 1);
+        backend.fail_hide_cursor = true;
+        let mut terminal = Terminal::with_options(backend).expect("terminal");
+        terminal.set_viewport_area(Rect::new(0, 0, 2, 1));
+
+        let error = terminal
+            .sync_update(|terminal| terminal.backend.write_all(b"raw"))
+            .expect_err("caret failure should propagate");
+        assert_eq!(error.to_string(), "hide cursor failed");
+
+        // A terminal that honours DEC private mode 2026 holds the screen until the end marker
+        // arrives, so a frame that failed partway through still has to close.
+        let output = terminal.backend().output();
+        let begin = output.find("[?2026h").expect("begin sync update");
+        let end = output.find("[?2026l").expect("end sync update");
+        assert!(
+            begin < end,
+            "expected the frame to close after a failed caret write, got {output:?}",
         );
     }
 

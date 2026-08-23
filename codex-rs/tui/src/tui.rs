@@ -22,6 +22,7 @@ use crossterm::event::EnableBracketedPaste;
 #[cfg(not(windows))]
 use crossterm::event::EnableFocusChange;
 use crossterm::event::KeyEvent;
+use crossterm::terminal::EndSynchronizedUpdate;
 use crossterm::terminal::EnterAlternateScreen;
 use crossterm::terminal::LeaveAlternateScreen;
 #[cfg(not(unix))]
@@ -305,6 +306,11 @@ fn restore_common(
     keyboard_restore: KeyboardRestore,
 ) -> Result<()> {
     let mut first_error = ensure_virtual_terminal_processing().err();
+
+    // A panic or an I/O failure can leave a synchronized frame open. A terminal that honours DEC
+    // private mode 2026 then holds the screen, and the panic message never reaches it. Closing the
+    // frame is a no-op when none is open, so it is safe to do unconditionally.
+    let _ = execute!(stdout(), EndSynchronizedUpdate);
 
     match keyboard_restore {
         KeyboardRestore::PopStack => keyboard_modes::restore_keyboard_enhancement_stack(),
