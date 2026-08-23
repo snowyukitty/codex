@@ -1086,18 +1086,13 @@ impl Tui {
         })??
     }
 
+    /// Removes the ambient pet image. This is `draw_ambient_pet_image` with no draw request, and
+    /// goes through the same synchronized frame so the clear cannot expose an intermediate caret
+    /// position on a terminal that ignores DEC private mode 2026.
     pub fn clear_ambient_pet_image(
         &mut self,
     ) -> std::result::Result<(), crate::pets::PetImageRenderError> {
-        if let Err(err) = ensure_virtual_terminal_processing() {
-            return Err(crate::pets::PetImageRenderError::Terminal(err));
-        }
-
-        crate::pets::render_ambient_pet_image(
-            self.terminal.backend_mut(),
-            &mut self.ambient_pet_image_state,
-            /*request*/ None,
-        )
+        self.draw_ambient_pet_image(/*request*/ None)
     }
 
     /// Draw a frame using the resize-reflow viewport and history insertion rules.
