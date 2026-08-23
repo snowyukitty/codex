@@ -1295,6 +1295,76 @@ mod tests {
     }
 
     #[test]
+    fn terminal_draw_restores_a_caret_hidden_before_the_frame() {
+        let mut terminal =
+            Terminal::with_options(CaptureBackend::new(/*width*/ 2, /*height*/ 1))
+                .expect("terminal");
+        terminal.set_viewport_area(Rect::new(
+            /*x*/ 0, /*y*/ 0, /*width*/ 2, /*height*/ 1,
+        ));
+
+        // A frame hides the caret before it writes anything, so no intermediate chunk can paint
+        // it at a stale position. The draw that ends the frame is what brings it back, and this
+        // is the contract that lets the frame hide it without any bookkeeping of its own.
+        terminal.hide_cursor().expect("hide caret for the frame");
+        terminal
+            .backend_mut()
+            .write_all(b"history\r\n")
+            .expect("history write");
+        terminal
+            .try_draw(|frame| {
+                frame.set_cursor_position(Position { x: 1, y: 0 });
+                io::Result::Ok(())
+            })
+            .expect("draw");
+
+        assert!(
+            !terminal.hidden_cursor,
+            "the draw should have taken the caret back over"
+        );
+        let output = terminal.backend().output();
+        let position = output.rfind("\x1b[1;2H").expect("final caret position");
+        let show = output.find("\x1b[?25h").expect("caret shown");
+        assert!(
+            position < show,
+            "expected the caret to be placed before it becomes visible, got {output:?}",
+        );
+        assert_eq!(
+            output.matches("\x1b[?25h").count(),
+            1,
+            "expected the caret to become visible once, got {output:?}",
+        );
+    }
+
+    #[test]
+    fn terminal_caret_visibility_writes_are_unconditional() {
+        let mut terminal =
+            Terminal::with_options(CaptureBackend::new(/*width*/ 2, /*height*/ 1))
+                .expect("terminal");
+
+        // `hidden_cursor` is not a reliable cache of what the terminal is showing: the restore
+        // path writes `Show` straight to stdout, behind this type's back. Skipping a write
+        // because the flag already agrees would leave the caret stuck in whatever state that
+        // put it in, so both writes have to be unconditional.
+        terminal.hide_cursor().expect("hide");
+        terminal.hide_cursor().expect("hide again");
+        terminal.show_cursor().expect("show");
+        terminal.show_cursor().expect("show again");
+
+        let output = terminal.backend().output();
+        assert_eq!(
+            output.matches("\x1b[?25l").count(),
+            2,
+            "expected both hides to reach the terminal, got {output:?}",
+        );
+        assert_eq!(
+            output.matches("\x1b[?25h").count(),
+            2,
+            "expected both shows to reach the terminal, got {output:?}",
+        );
+    }
+
+    #[test]
     fn reset_cursor_style_emits_default_user_shape() {
         let mut output = Vec::new();
         let mut terminal =
