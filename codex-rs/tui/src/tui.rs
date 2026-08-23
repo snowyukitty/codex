@@ -971,6 +971,15 @@ impl Tui {
         ensure_virtual_terminal_processing()?;
 
         stdout().sync_update(|_| {
+            // A frame does not reach the terminal as one write. History insertion emits a
+            // newline per line and `stdout()` is a `LineWriter`, so the frame crosses the write
+            // boundary once per history row and once per 1 KiB of diff. A terminal that does not
+            // implement synchronized updates (DEC private mode 2026) paints each of those chunks
+            // as it arrives and draws the caret wherever the last cursor move left it, so it
+            // appears to jump between the composer, the status line and the footer. Hide it for
+            // the frame; the draw that ends the frame decides where it comes back.
+            self.terminal.hide_cursor()?;
+
             #[cfg(unix)]
             if let Some(prepared) = prepared_resume.take() {
                 prepared.apply(&mut self.terminal, screen_size)?;
@@ -1106,6 +1115,9 @@ impl Tui {
         ensure_virtual_terminal_processing()?;
 
         stdout().sync_update(|_| {
+            // Keep the caret hidden across the frame, for the reason spelled out in `draw`.
+            self.terminal.hide_cursor()?;
+
             #[cfg(unix)]
             if let Some(prepared) = prepared_resume.take() {
                 prepared.apply(&mut self.terminal, screen_size)?;
