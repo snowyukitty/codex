@@ -138,6 +138,9 @@ where
     current: usize,
     /// Whether the cursor is currently hidden
     pub hidden_cursor: bool,
+    /// Number of caret visibility changes made through [`Terminal::hide_cursor`] and
+    /// [`Terminal::show_cursor`]. Used to tell whether a frame placed a caret of its own.
+    cursor_visibility_ops: u64,
     /// Area of the viewport
     pub viewport_area: Rect,
     /// Last known size of the terminal. Used to detect if the internal buffers have to be resized.
@@ -217,6 +220,7 @@ where
             buffers: [Buffer::empty(Rect::ZERO), Buffer::empty(Rect::ZERO)],
             current: 0,
             hidden_cursor: false,
+            cursor_visibility_ops: 0,
             viewport_area: Rect::new(
                 /*x*/ 0,
                 cursor_pos.y,
@@ -286,7 +290,25 @@ where
     /// Runs terminal operations inside a synchronized frame on this terminal's backend writer.
     pub fn sync_update<T>(&mut self, operations: impl FnOnce(&mut Self) -> T) -> io::Result<T> {
         queue!(self.backend, BeginSynchronizedUpdate)?;
+
+        // A frame leaves this process as several writes, and a terminal that does not implement
+        // synchronized updates (DEC private mode 2026) paints each one as it arrives. A caret left
+        // visible is then drawn at every intermediate position the frame writes through, so it
+        // appears to jump between the composer, the status line and the footer. Keep it hidden for
+        // the duration of the frame; the frame itself decides where it ends up.
+        let caret_was_visible = !self.hidden_cursor;
+        if caret_was_visible {
+            self.hide_cursor()?;
+        }
+        let caret_ops_before_frame = self.cursor_visibility_ops;
+
         let result = operations(self);
+
+        // Restore the caller's caret only when the frame did not place one of its own.
+        if caret_was_visible && self.cursor_visibility_ops == caret_ops_before_frame {
+            self.show_cursor()?;
+        }
+
         queue!(self.backend, EndSynchronizedUpdate)?;
         std::io::Write::flush(&mut self.backend)?;
         Ok(result)
@@ -456,6 +478,7 @@ where
     pub fn hide_cursor(&mut self) -> io::Result<()> {
         self.backend.hide_cursor()?;
         self.hidden_cursor = true;
+        self.cursor_visibility_ops = self.cursor_visibility_ops.wrapping_add(1);
         Ok(())
     }
 
@@ -463,6 +486,7 @@ where
     pub fn show_cursor(&mut self) -> io::Result<()> {
         self.backend.show_cursor()?;
         self.hidden_cursor = false;
+        self.cursor_visibility_ops = self.cursor_visibility_ops.wrapping_add(1);
         Ok(())
     }
 
@@ -1314,6 +1338,80 @@ mod tests {
         assert!(
             cursor_position < draw_flush && draw_flush < end_write,
             "expected cursor position to flush before sync end, got {events:?}",
+        );
+    }
+
+    #[test]
+    fn terminal_sync_update_keeps_the_caret_hidden_until_the_frame_places_it() {
+        let mut terminal =
+            Terminal::with_options(CaptureBackend::new(/*width*/ 2, /*height*/ 1))
+                .expect("terminal");
+        terminal.set_viewport_area(Rect::new(0, 0, 2, 1));
+
+        terminal
+            .sync_update(|terminal| {
+                terminal.draw(|frame| {
+                    frame.buffer.set_string(0, 0, "x", Style::default());
+                    frame.set_cursor_position((1, 0));
+                })
+            })
+            .expect("sync update")
+            .expect("draw");
+
+        let output = terminal.backend().output();
+        let begin = output.find("[?2026h").expect("begin sync update");
+        let hide = output.find("[?25l").expect("caret hidden");
+        let write = output.find('x').expect("cell write");
+        let show = output.find("[?25h").expect("caret shown");
+        let end = output.find("[?2026l").expect("end sync update");
+        assert!(
+            begin < hide && hide < write && write < show && show < end,
+            "expected the caret to stay hidden while the frame paints, got {output:?}",
+        );
+
+        let events = terminal.backend().events();
+        let placed = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    CaptureEvent::SetCursorPosition(Position { x: 1, y: 0 })
+                )
+            })
+            .expect("final caret position");
+        let shown = events
+            .iter()
+            .position(|event| matches!(event, CaptureEvent::Write(text) if text.contains("[?25h")))
+            .expect("caret shown");
+        assert!(
+            placed < shown,
+            "expected the caret to be positioned before it becomes visible, got {events:?}",
+        );
+    }
+
+    #[test]
+    fn terminal_sync_update_restores_a_caret_the_frame_did_not_place() {
+        let mut terminal =
+            Terminal::with_options(CaptureBackend::new(/*width*/ 2, /*height*/ 1))
+                .expect("terminal");
+        terminal.set_viewport_area(Rect::new(0, 0, 2, 1));
+
+        terminal
+            .sync_update(|terminal| terminal.backend.write_all(b"raw"))
+            .expect("sync update")
+            .expect("write");
+
+        assert!(
+            !terminal.hidden_cursor,
+            "caret visibility should be restored"
+        );
+        let output = terminal.backend().output();
+        let hide = output.find("[?25l").expect("caret hidden");
+        let show = output.find("[?25h").expect("caret shown");
+        let end = output.find("[?2026l").expect("end sync update");
+        assert!(
+            hide < show && show < end,
+            "expected the caret to be restored inside the frame, got {output:?}",
         );
     }
 
