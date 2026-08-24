@@ -1,9 +1,11 @@
 //! Terminal geometry policy shared by the main app and standalone screens.
 
 use std::io;
+use std::io::Write;
 use std::time::Duration;
 use std::time::Instant;
 
+use ratatui::backend::Backend;
 use ratatui::layout::Size;
 
 use super::Tui;
@@ -17,7 +19,10 @@ pub(super) struct ScreenSizePolicy {
     deferred_size: Option<Size>,
 }
 
-impl Tui {
+impl<B> Tui<B>
+where
+    B: Backend<Error = io::Error> + Write,
+{
     /// Resolve event geometry while avoiding backend queries on ordinary repaint frames.
     pub(crate) fn screen_size_for_event(&mut self, event: &TuiEvent) -> io::Result<Size> {
         if matches!(event, TuiEvent::Resize(_)) {

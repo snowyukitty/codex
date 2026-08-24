@@ -77,6 +77,9 @@ mod startup_tests;
 mod terminal_stderr;
 #[cfg(test)]
 pub(crate) mod test_support;
+
+#[cfg(test)]
+mod caret_frame_tests;
 #[cfg(any(windows, test))]
 mod windows_console;
 
@@ -103,7 +106,10 @@ fn should_emit_notification(condition: NotificationCondition, terminal_focused: 
     }
 }
 
-impl Drop for Tui {
+impl<B> Drop for Tui<B>
+where
+    B: Backend<Error = io::Error> + Write,
+{
     fn drop(&mut self) {
         if let Err(err) = self.clear_ambient_pet_image() {
             tracing::debug!(error = %err, "failed to clear ambient pet image on TUI drop");
@@ -576,11 +582,17 @@ pub enum TuiEvent {
     Resume,
 }
 
-pub struct Tui {
+/// The backend is a type parameter only so tests can drive a real frame against a
+/// terminal model. Production never names it; the default is the only backend the
+/// binary constructs.
+pub struct Tui<B = CrosstermBackend<Stdout>>
+where
+    B: Backend<Error = io::Error> + Write,
+{
     frame_requester: FrameRequester,
     draw_tx: broadcast::Sender<()>,
     event_broker: Arc<EventBroker>,
-    pub(crate) terminal: Terminal,
+    pub(crate) terminal: CustomTerminal<B>,
     pending_history_lines: Vec<PendingHistoryLines>,
     screen_size: ScreenSizePolicy,
     ambient_pet_image_state: crate::pets::PetImageRenderState,
@@ -619,9 +631,12 @@ where
     terminal.clear_after_position(clear_position)
 }
 
-impl Tui {
+impl<B> Tui<B>
+where
+    B: Backend<Error = io::Error> + Write,
+{
     pub(crate) fn new(
-        terminal: Terminal,
+        terminal: CustomTerminal<B>,
         enhanced_keys_supported: bool,
         stderr_guard: terminal_stderr::TerminalStderrGuard,
     ) -> Self {
@@ -890,7 +905,7 @@ impl Tui {
     /// terminal shrinks. Resize reflow owns rebuilding those rows from transcript source, so
     /// scrolling here would move the viewport once and then replay history into the wrong row.
     fn update_inline_viewport_for_resize_reflow(
-        terminal: &mut Terminal,
+        terminal: &mut CustomTerminal<B>,
         height: u16,
         screen_size: Size,
         scrollback: ScrollbackStrategy,
@@ -928,7 +943,7 @@ impl Tui {
 
     /// Write any buffered history lines above the viewport and clear the buffer.
     fn flush_pending_history_lines(
-        terminal: &mut Terminal,
+        terminal: &mut CustomTerminal<B>,
         pending_history_lines: &mut Vec<PendingHistoryLines>,
         scrollback: ScrollbackStrategy,
         screen_size: Size,

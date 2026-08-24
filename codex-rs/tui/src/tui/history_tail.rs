@@ -12,7 +12,10 @@ use ratatui::layout::Position;
 use std::io;
 use std::io::Write;
 
-impl Tui {
+impl<B> Tui<B>
+where
+    B: Backend<Error = io::Error> + Write,
+{
     #[cfg(test)]
     pub(crate) fn pending_history_lines_for_test(&self) -> Vec<HyperlinkLine> {
         self.pending_history_lines
