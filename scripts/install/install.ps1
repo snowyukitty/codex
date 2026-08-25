@@ -208,13 +208,43 @@ function Resolve-ReleaseAssetSelection {
     }
 }
 
+function New-Sha256Hasher {
+    # Match Get-FileHash's FIPS-compatible preference when the CSP implementation is available.
+    $hasherType = "System.Security.Cryptography.SHA256CryptoServiceProvider" -as [Type]
+    if ($null -ne $hasherType) {
+        try {
+            return $hasherType::new()
+        }
+        catch {
+            # Fall back when the CSP type is exposed but cannot be constructed.
+        }
+    }
+
+    return [System.Security.Cryptography.SHA256]::Create()
+}
+
 function Test-ArchiveDigest {
     param(
         [string]$ArchivePath,
         [string]$ExpectedDigest
     )
 
-    $actualDigest = (Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $resolvedArchivePath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ArchivePath)
+    $stream = [System.IO.File]::OpenRead($resolvedArchivePath)
+    try {
+        $sha256 = New-Sha256Hasher
+        try {
+            $hashBytes = $sha256.ComputeHash($stream)
+        }
+        finally {
+            $sha256.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+
+    $actualDigest = [System.BitConverter]::ToString($hashBytes).Replace("-", "").ToLowerInvariant()
     if ($actualDigest -ne $ExpectedDigest) {
         throw "Downloaded Codex archive checksum did not match expected digest. Expected $ExpectedDigest but got $actualDigest."
     }
